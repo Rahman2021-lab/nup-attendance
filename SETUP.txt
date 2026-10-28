@@ -1,0 +1,72 @@
+NUP ATTENDANCE - ONLINE VERSION (same data on every phone)
+===========================================================
+
+What is in this folder
+  index.html     the app
+  api/sync.js    the online sync service (runs on Vercel)
+  vercel.json    settings (allows the camera)
+  package.json   project info
+
+STEP 1 - Put it online (about 2 minutes)
+  1. Install Vercel once:     npm i -g vercel
+  2. Log in:                  vercel login
+  3. Open a terminal INSIDE this folder, then run:   vercel
+     (accept the defaults; answer "No" to "Want to modify settings?")
+  4. You now have a link like https://nup-attendance-xxxx.vercel.app
+
+STEP 2 - Add the free online database (about 2 minutes)
+  1. Go to vercel.com, open your project, click the "Storage" tab.
+  2. Click "Create Database" and choose "Upstash Redis" (free plan is enough).
+  3. When asked, connect it to THIS project (all environments).
+  4. Back in the terminal run:   vercel --prod
+     (this must be done after connecting the database)
+
+STEP 3 - First phone (you, the OWNER, do this first and do not share the link before it)
+  1. Open the link from Step 1 in Chrome.
+  2. Choose an OWNER CODE (8+ characters) and keep it secret. Then create the admin
+     account. Only someone who knows the owner code can ever create an admin, so people
+     you share the link with cannot create one.
+  3. Users tab > "Create sync key (first phone)". It asks for the owner code once, then
+     suggests a sync key for you (like K7MQ-2XRD-9TWP). WRITE IT DOWN. You may change it
+     (8+ characters). The first key created locks the online data.
+     You can see the key again any time with the "Show sync key" button.
+  4. Wait until the top shows "Online sync: synced".
+
+STEP 4 - Every other phone
+  1. Open the SAME link.
+  2. On the first screen tap "Connect to online data" and type the sync key
+     (on a phone that already has an account: Users tab > "Connect with a sync key").
+  3. Sign in with the admin (or operator) account. Everything is already there.
+
+Sharing with staff
+  - Give them the link, the sync key, and an operator account that you create in the
+    Users tab. They tap "Connect to online data", type the sync key, and sign in.
+  - Never give anyone the owner code. It is needed only to create the admin account
+    and to turn on online sync.
+
+Notes
+  - If you forget the owner code, open the Upstash database in Vercel and delete the
+    key "nup:ownerhash"; then the next person to open the app can set a new one.
+  - Wrong owner codes and sync keys are limited to a few tries, then blocked for 15 minutes.
+  - Keep the sync key private. Anyone with the link AND the key can read the data.
+  - Student photos and face data are stored in YOUR Upstash database. Get consent.
+  - If a phone is offline, changes stay on it and are sent when it is back online.
+  - Face matching and the camera need the https link above.
+
+PAGE AND SERVICE ON DIFFERENT SITES
+  If the app page is hosted somewhere else, install only the service (see the separate
+  "nup-sync-service" package) and use the app's "Set online address" button.
+
+IF SOMETHING DOES NOT WORK
+  1. Open  https://YOUR-SITE/api/sync  in a browser (replace YOUR-SITE with your link).
+     - You should see:  {"ok":true,"service":"nup-attendance-sync","storage_connected":true,"redis":"ok"}
+     - Page not found (404)  -> you deployed the wrong folder. Deploy THIS folder (the one that
+       contains the "api" folder next to index.html), then run:  vercel --prod
+     - storage_connected is false -> in Vercel open Storage, create an Upstash Redis database,
+       connect it to the project, then run:  vercel --prod   (required after connecting)
+     - A Vercel login / "Authentication Required" page -> in the project open Settings >
+       Deployment Protection and turn off "Vercel Authentication". Use the production link
+       (from "vercel --prod"), not the long preview link.
+  2. In the app, the "Test online connection" button (first screen, and Users tab) does the same
+     check and tells you in plain words what to fix.
+  3. After any change in Vercel settings or storage, run  vercel --prod  again.

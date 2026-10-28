@@ -1,0 +1,9 @@
+{
+  "headers": [
+    { "source": "/(.*)", "headers": [
+      { "key": "Permissions-Policy", "value": "camera=(self)" },
+      { "key": "X-Content-Type-Options", "value": "nosniff" }
+    ]},
+    { "source": "/api/(.*)", "headers": [ { "key": "Cache-Control", "value": "no-store" } ] }
+  ]
+}
