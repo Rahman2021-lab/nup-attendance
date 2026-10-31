@@ -27,6 +27,32 @@ async function rd(cmds) {
 }
 
 const own = (c) => crypto.createHash("sha256").update("nup-owner:" + c).digest("hex");
+const rand = (n) => crypto.randomBytes(n).toString("hex");
+const CODE_CHARS = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+function makeCode() { let o = ""; for (let i = 0; i < 10; i++) { o += CODE_CHARS[crypto.randomInt(CODE_CHARS.length)]; if (i === 4) o += "-"; } return o; }
+const normCode = (c) => String(c || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+const clientIp = (req) => String((req.headers && (req.headers["x-forwarded-for"] || req.headers["x-real-ip"])) || (req.socket && req.socket.remoteAddress) || "").split(",")[0].trim().slice(0, 60);
+const str = (v, n) => (typeof v === "string" ? v : "").trim().slice(0, n);
+const devCache = new Map(); // token hash -> { dev, at } (re-checked every 30 s so removal takes effect quickly)
+function parse(x) { try { return x ? JSON.parse(x) : null; } catch (_) { return null; } }
+function pairs(flat) { const o = {}; for (let i = 0; i + 1 < (flat || []).length; i += 2) o[flat[i]] = flat[i + 1]; return o; }
+async function deviceFor(token, req) {
+  const th = sha("tok:" + token), now = Date.now(), ip = clientIp(req);
+  let c = devCache.get(th);
+  if (!c || now - c.at > 30000) {
+    const [id] = await rd([["HGET", "nup:tok", th]]);
+    if (!id) { devCache.delete(th); return null; }
+    const [raw] = await rd([["HGET", "nup:devices", id]]);
+    const dev = parse(raw);
+    if (!dev || dev.revoked) { devCache.delete(th); return null; }
+    c = { dev, at: now }; devCache.set(th, c);
+  }
+  if (now - (c.dev.last || 0) > 300000 || (ip && ip !== c.dev.lastIp)) {
+    c.dev.last = now; if (ip) c.dev.lastIp = ip;
+    await rd([["HSET", "nup:devices", c.dev.id, JSON.stringify(c.dev)]]);
+  }
+  return c.dev;
+}
 const sha = (k) => crypto.createHash("sha256").update("nup-attendance:" + k).digest("hex");
 const same = (a, b) => {
   const x = Buffer.from(String(a)), y = Buffer.from(String(b));
@@ -98,6 +124,69 @@ module.exports = async function handler(req, res) {
       return send(res, 403, { error: "bad_owner" });
     }
 
+    const ownerGate = async () => {
+      if (!ownerHash) return [409, "owner_not_set"];
+      if (await tooMany("owner", 10)) return [429, "too_many"];
+      if (typeof b.owner === "string" && same(ownerHash, own(b.owner))) return null;
+      await noteFail("owner"); return [403, "owner_required"];
+    };
+
+    if (["access_create", "access_list", "access_cancel", "device_revoke", "device_delete"].includes(b.action)) {
+      const bad = await ownerGate(); if (bad) return send(res, bad[0], { error: bad[1] });
+      const now = Date.now();
+      if (b.action === "access_create") {
+        const label = str(b.label, 60); if (!label) return send(res, 400, { error: "label_required" });
+        const hours = Math.max(1, Math.min(720, Number(b.hours) || 24));
+        const code = makeCode(), exp = now + hours * 3600000;
+        await rd([["HSET", "nup:codes", sha("code:" + normCode(code)), JSON.stringify({ label, exp, created: now })]]);
+        return send(res, 200, { ok: true, code, exp });
+      }
+      if (b.action === "access_list") {
+        const [cf, df] = await rd([["HGETALL", "nup:codes"], ["HGETALL", "nup:devices"]]);
+        const codes = [], devices = [], stale = [];
+        const co = pairs(cf), dv = pairs(df);
+        Object.keys(co).forEach((h) => { const c = parse(co[h]); if (!c) return; if (c.exp < now) stale.push(["HDEL", "nup:codes", h]); else codes.push({ id: h.slice(0, 12), label: c.label, exp: c.exp, created: c.created }); });
+        Object.keys(dv).forEach((id) => { const d = parse(dv[id]); if (d) devices.push({ id: d.id, label: d.label, dname: d.dname, device: d.device, ip: d.ip, lastIp: d.lastIp, created: d.created, last: d.last, revoked: !!d.revoked }); });
+        if (stale.length) await rd(stale);
+        return send(res, 200, { ok: true, codes, devices });
+      }
+      if (b.action === "access_cancel") {
+        const [cf] = await rd([["HGETALL", "nup:codes"]]);
+        const h = Object.keys(pairs(cf)).find((k) => k.slice(0, 12) === String(b.id || ""));
+        if (h) await rd([["HDEL", "nup:codes", h]]);
+        return send(res, 200, { ok: true });
+      }
+      const [raw] = await rd([["HGET", "nup:devices", String(b.id || "")]]);
+      const dev = parse(raw);
+      if (!dev) return send(res, 404, { error: "no_such_device" });
+      if (b.action === "device_revoke") {
+        dev.revoked = true; dev.rev = now;
+        await rd([["HSET", "nup:devices", dev.id, JSON.stringify(dev)], ["HDEL", "nup:tok", dev.th]]);
+        devCache.delete(dev.th);
+        return send(res, 200, { ok: true });
+      }
+      if (!dev.revoked) return send(res, 409, { error: "remove_access_first" });
+      await rd([["HDEL", "nup:devices", dev.id]]);
+      return send(res, 200, { ok: true });
+    }
+
+    if (b.action === "device_login") {
+      if (await tooMany("code", 10)) return send(res, 429, { error: "too_many" });
+      const norm = normCode(b.code);
+      if (norm.length < 8) { await noteFail("code"); return send(res, 403, { error: "bad_code" }); }
+      const h = sha("code:" + norm);
+      const [raw] = await rd([["HGET", "nup:codes", h]]);
+      const c = parse(raw);
+      if (!c || c.exp < Date.now()) { await noteFail("code"); return send(res, 403, { error: "bad_code" }); }
+      const [gone] = await rd([["HDEL", "nup:codes", h]]);
+      if (Number(gone) !== 1) { await noteFail("code"); return send(res, 403, { error: "bad_code" }); }
+      const id = rand(6), token = rand(24), th = sha("tok:" + token), now = Date.now(), ip = clientIp(req);
+      const dev = { id, label: c.label, dname: str(b.device && b.device.label, 60), device: str(b.device && b.device.name, 80), ip, lastIp: ip, created: now, last: now, revoked: false, th };
+      await rd([["HSET", "nup:devices", id, JSON.stringify(dev)], ["HSET", "nup:tok", th, id]]);
+      await clearFail("code");
+      return send(res, 200, { ok: true, token, id, name: c.label });
+    }
+
     if (b.action === "claim") {
       if (!ownerHash) return send(res, 409, { error: "owner_not_set" });
       if (await tooMany("owner", 10)) return send(res, 429, { error: "too_many" });
@@ -109,8 +198,13 @@ module.exports = async function handler(req, res) {
       return r === "OK" ? send(res, 200, { ok: true }) : send(res, 409, { error: "already_claimed" });
     }
 
-    if (await tooMany("key", 30)) return send(res, 429, { error: "too_many" });
-    if (!stored || typeof b.key !== "string" || !same(stored, sha(b.key))) { await noteFail("key"); return send(res, 401, { error: "bad_key" }); }
+    if (typeof b.token === "string" && b.token) {
+      const dev = await deviceFor(b.token, req);
+      if (!dev) return send(res, 401, { error: "revoked" });
+    } else {
+      if (await tooMany("key", 30)) return send(res, 429, { error: "too_many" });
+      if (!stored || typeof b.key !== "string" || !same(stored, sha(b.key))) { await noteFail("key"); return send(res, 401, { error: "bad_key" }); }
+    }
 
     const cid = String(b.cid || "").slice(0, 40);
     const rejected = [];
