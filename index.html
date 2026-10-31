@@ -102,6 +102,7 @@ details.card summary{cursor:pointer;font-weight:700}
 <p class="note" id="ownMsg" hidden></p>
 <div class="bar"><button class="pri" id="ab">Sign in</button></div>
 <div class="bar" id="conn" hidden><button id="conn1">Connect to online data (new phone)</button><button id="diag1">Test online connection</button><button id="addr1">Set online address</button></div>
+<div class="bar"><button id="codeBtn">Log in with an access code</button></div>
 <div class="help" id="am" hidden role="alert"></div>
 <p class="note">Accounts are stored on this device only. Only the admin can add users or change passwords.</p></div>
 </div>
@@ -174,6 +175,10 @@ details.card summary{cursor:pointer;font-weight:700}
 <p class="note" id="syncInfo"></p>
 <div class="bar"><button class="pri" id="syOn">Create sync key (first phone)</button><button id="syJoin">Connect with a sync key</button><button class="pri" id="syNow" hidden>Sync now</button><button id="syShow" hidden>Show sync key</button><button id="syOff" hidden>Turn off on this device</button><button id="syTest">Test online connection</button><button id="syAddr">Set online address</button></div>
 <p class="note">Students, photos, face data, subjects, attendance and logins are kept in your own Vercel database and protected by the sync key. Type the same key on every phone. On a new phone, open the app and choose “Connect to online data” on the first screen.</p></div>
+<div class="card"><h2>Access codes &amp; devices</h2>
+<p class="note">Give each person a one-time access code. When they log in with it, their device name and IP address appear here, and you can remove their access at any time. Needs the online service and the owner code.</p>
+<div class="bar"><input id="acn" class="grow" placeholder="Person name (for example Sir Ali)" aria-label="Person name"><select id="acx" aria-label="Code valid for"><option value="24">Valid 24 hours</option><option value="1">Valid 1 hour</option><option value="168">Valid 7 days</option></select><button class="pri" id="acMake">Create access code</button><button id="acList">Show devices</button></div>
+<div id="devList"></div></div>
 <div class="card"><h2>Add an operator</h2>
 <div class="bar"><input id="nu" placeholder="Username" aria-label="New username" class="grow"><input id="np" type="password" placeholder="Password (6+ characters)" aria-label="New password" class="grow"><button class="pri" id="nadd">Add</button></div>
 <p class="note">Operators can only use the Scan tab. Admins can manage people, reports and users.</p></div>
@@ -335,7 +340,7 @@ function enter(u){
   document.querySelectorAll("[data-a]").forEach(function(e){e.hidden=!adm});
   show("scan");fillDepts();fillSubj();updSubj();renderScan();if(adm){renderPeople();renderUsers()}
 }
-$("out").onclick=function(){camStop();try{sessionStorage.removeItem("nup-sess")}catch(e){}me=null;$("au").value="";showAuth()};
+$("out").onclick=function(){camStop();try{sessionStorage.removeItem("nup-sess")}catch(e){}if(me&&me.dev){SM.token="";SM.devName="";SM.seen={};SM.cursor=0;SM.joined=false;saveMeta();setSync("off")}me=null;$("au").value="";showAuth()};
 function adminOnly(){return me&&me.r==="admin"}
 
 /* ---------- departments ---------- */
@@ -839,10 +844,11 @@ $("ulist").onclick=function(e){
 
 /* ---------- online sync ---------- */
 var SM=(function(){var m=null;try{m=JSON.parse(lsGet("nup-sync-meta"))}catch(e){}if(!m||typeof m!=="object")m={};
-  m.seen=(m.seen&&typeof m.seen==="object")?m.seen:{};m.cursor=+m.cursor||0;m.cid=typeof m.cid==="string"&&m.cid?m.cid:rnd();m.key=typeof m.key==="string"?m.key:"";m.url=typeof m.url==="string"?m.url:"";m.joined=!!m.joined;m.last=+m.last||0;m.bad=false;return m})();
+  m.seen=(m.seen&&typeof m.seen==="object")?m.seen:{};m.cursor=+m.cursor||0;m.cid=typeof m.cid==="string"&&m.cid?m.cid:rnd();m.key=typeof m.key==="string"?m.key:"";m.token=typeof m.token==="string"?m.token:"";m.devName=typeof m.devName==="string"?m.devName:"";m.url=typeof m.url==="string"?m.url:"";m.joined=!!m.joined;m.last=+m.last||0;m.bad=false;return m})();
 function saveMeta(){lsSet("nup-sync-meta",JSON.stringify(SM))}
 function syncUrl(){return SM.url||(/^https?:/.test(location.protocol)?"/api/sync":"")}
-function syncOn(){return !!(SM.key&&syncUrl())}
+function syncOn(){return !!((SM.key||SM.token)&&syncUrl())}
+function au(){return SM.token?{token:SM.token}:{key:SM.key}}
 var syncBusy=false,syncAgain=false,syncT,syncSt={s:"off"};
 function setSync(s){
   syncSt={s:s};var c=$("syncChip");
@@ -903,7 +909,7 @@ function applyItems(items){
   sane(D);reindex();
   var c2=ents();
   done.forEach(function(it){if(it.v===null||c2[it.k]===undefined)delete SM.seen[it.k];else SM.seen[it.k]=fh(c2[it.k])});
-  if(me)me=D.users.filter(function(u){return u.u===me.u})[0]||null;
+  if(me&&!me.dev)me=D.users.filter(function(u){return u.u===me.u})[0]||null;
   writeD();saveMeta();uiRefresh();
 }
 function uiRefresh(){
@@ -914,7 +920,7 @@ function uiRefresh(){
 async function pullAll(){
   var keys=[],more=true,g=0;
   while(more&&g++<400){
-    var j=await post({action:"sync",key:SM.key,cid:SM.cid,since:SM.cursor,push:[]});
+    var j=await post({action:"sync",...au(),cid:SM.cid,since:SM.cursor,push:[]});
     if(j.items&&j.items.length){applyItems(j.items);j.items.forEach(function(i){keys.push(i.k)})}
     SM.cursor=j.cursor||SM.cursor;more=!!j.more;saveMeta();
   }
@@ -925,7 +931,7 @@ async function pushAll(){
   while(i<items.length){
     var batch=[],sz=0;
     while(i<items.length&&batch.length<250&&(sz<400000||!batch.length)){sz+=items[i].sz;batch.push(items[i]);i++}
-    var j=await post({action:"sync",key:SM.key,cid:SM.cid,since:SM.cursor,pull:false,push:batch.map(function(x){return{k:x.k,t:x.t,v:x.v}})});
+    var j=await post({action:"sync",...au(),cid:SM.cid,since:SM.cursor,pull:false,push:batch.map(function(x){return{k:x.k,t:x.t,v:x.v}})});
     var rej={};(j.rejected||[]).forEach(function(k){rej[k]=1});
     batch.forEach(function(x){if(rej[x.k])return;if(x.del)delete SM.seen[x.k];else SM.seen[x.k]=x.h});
     saveMeta();
@@ -936,7 +942,7 @@ function joinMerge(keys){
   var remoteAdmin=D.users.some(function(u){return ru.indexOf("u:"+u.u.toLowerCase())>=0&&u.r==="admin"});
   if(!remoteAdmin)return;
   D.users=D.users.filter(function(u){var k="u:"+u.u.toLowerCase();if(ru.indexOf(k)>=0)return true;delete SM.seen[k];return false});
-  if(me)me=D.users.filter(function(u){return u.u===me.u})[0]||null;
+  if(me&&!me.dev)me=D.users.filter(function(u){return u.u===me.u})[0]||null;
   writeD();
   if(!me&&!$("app").hidden){camStop();showAuth()}
 }
@@ -949,13 +955,14 @@ async function syncCycle(){
     await pushAll();await pullAll();
     SM.last=Date.now();saveMeta();setSync("ok");return true;
   }catch(e){
+    if(e&&e.code==="revoked"&&SM.token){deviceRemoved();return false}
     if(e&&e.code==="bad_key"){SM.bad=true;setSync("badkey");toast("The online sync key was not accepted.")}else setSync("offline");
     return false;
   }finally{syncBusy=false;if(syncAgain){syncAgain=false;syncSoon(800)}}
 }
 function syncSoon(ms){if(!syncOn()||SM.bad)return;clearTimeout(syncT);syncT=setTimeout(function(){syncCycle()},ms==null?2500:ms)}
 function syncNow(){clearTimeout(syncT);return syncCycle()}
-setInterval(function(){if(syncOn()&&!SM.bad&&!document.hidden)syncSoon(300)},45000);
+setInterval(function(){if(syncOn()&&!SM.bad&&!document.hidden)syncSoon(300)},90000);
 
 function makeKey(){var A="ABCDEFGHJKMNPQRSTUVWXYZ23456789",a=new Uint8Array(12),o="",i;try{crypto.getRandomValues(a)}catch(e){for(i=0;i<12;i++)a[i]=Math.floor(Math.random()*256)}for(i=0;i<12;i++){o+=A.charAt(a[i]%A.length);if(i%4===3&&i<11)o+="-"}return o}
 async function diagnose(){
@@ -993,6 +1000,11 @@ function askUrl(cb){
 }
 function syncError(e){
   var c=e&&e.code,u=syncUrl();
+  if(c==="bad_code")return "That access code is not valid or has expired. Ask the admin for a new code.";
+  if(c==="revoked")return "This device's access was removed by the admin.";
+  if(c==="label_required")return "Please type the person's name first.";
+  if(c==="no_such_device")return "That device was not found.";
+  if(c==="remove_access_first")return "Remove the device's access first.";
   if(c==="bad_key")return "Wrong sync key.";
   if(c==="bad_owner")return "Wrong owner code.";
   if(c==="owner_required")return "The owner code is required.";
@@ -1061,6 +1073,86 @@ $("conn1").onclick=function(){if(!D.users.length)joinFlow(function(){showAuth();
 $("syNow").onclick=function(){if(adminOnly()){SM.bad=false;syncNow()}};
 $("syOff").onclick=function(){if(!adminOnly())return;dlg("Turn off online sync on this phone? Data already on this phone stays. Other phones keep using the online data.",{ok:"Turn off"},function(){SM.key="";SM.seen={};SM.cursor=0;SM.joined=false;SM.bad=false;saveMeta();setSync("off")})};
 
+/* ---------- access codes and devices ---------- */
+function dt(ts){return ts?ymd(new Date(ts))+" "+hm(ts):"-"}
+function detectDevice(){
+  var ua=navigator.userAgent||"",b="Browser",os="";
+  if(/Edg\//.test(ua))b="Edge";else if(/OPR\//.test(ua))b="Opera";else if(/Firefox\//.test(ua))b="Firefox";else if(/Chrome\//.test(ua))b="Chrome";else if(/Safari\//.test(ua))b="Safari";
+  if(/Android/.test(ua))os="Android";else if(/iPhone|iPad|iPod/.test(ua))os="iOS";else if(/Windows/.test(ua))os="Windows";else if(/Mac OS X/.test(ua))os="macOS";else if(/Linux/.test(ua))os="Linux";
+  var mm=ua.match(/Android[^;]*;\s*([^;)]+?)(?:\sBuild|\))/),model=mm&&mm[1]&&mm[1].trim()!=="K"?mm[1].trim():"";
+  return b+" on "+(os||"unknown device")+(model?" ("+model+")":"");
+}
+async function deviceName(){
+  var n=detectDevice();
+  try{if(navigator.userAgentData&&navigator.userAgentData.getHighEntropyValues){var v=await navigator.userAgentData.getHighEntropyValues(["model"]);if(v&&v.model)n=n.replace(/ \(.*\)$/,"")+" ("+v.model+")"}}catch(e){}
+  return n;
+}
+function enterDevice(){
+  me={u:SM.devName||"Operator",r:"operator",dev:true};
+  $("auth").hidden=true;$("app").hidden=false;$("who").textContent=me.u+" (operator, this device)";
+  document.querySelectorAll("[data-a]").forEach(function(e){e.hidden=true});
+  show("scan");fillDepts();fillSubj();updSubj();renderScan();setSync("sync");syncNow();
+}
+function deviceRemoved(){
+  SM.token="";SM.devName="";SM.seen={};SM.cursor=0;SM.joined=false;saveMeta();
+  me=null;camStop();setSync("off");showAuth();msg("Your access was removed by the admin. Ask the admin for a new access code.");
+}
+$("codeBtn").onclick=function(){
+  askUrl(function(){
+    dlg("Enter the access code the admin gave you",{input:1,ok:"Next",ph:"XXXXX-XXXXX"},function(code){
+      if(!code||!code.trim())return;
+      deviceName().then(function(dn){
+        dlg("Name this device. The admin will see this name, your IP address and when you log in.",{input:1,val:dn,ok:"Log in"},async function(lab){
+          try{
+            var r=await post({action:"device_login",code:code.trim(),device:{name:dn,label:(lab||"").trim()||dn}});
+            SM.token=r.token;SM.devName=r.name;SM.key="";SM.joined=false;SM.cursor=0;SM.seen={};SM.bad=false;saveMeta();enterDevice();
+          }catch(e){dlg(syncError(e),{info:1})}
+        });
+      });
+    });
+  });
+};
+async function loadDevices(){
+  if(!adminOnly())return;
+  if(!syncUrl()){$("devList").innerHTML='<div class="empty">This needs the online service. Open the app from your Vercel link.</div>';return}
+  ensureOwner(async function(){
+    try{renderDevices(await post({action:"access_list",owner:OWN}))}
+    catch(e){if(e&&(e.code==="owner_required"||e.code==="bad_owner"))OWN="";dlg(syncError(e),{info:1})}
+  });
+}
+function renderDevices(r){
+  var o="";
+  (r.codes||[]).forEach(function(c){o+='<div class="row"><div><b>'+esc(c.label)+'</b> <span class="tag">waiting for login</span> <span class="mute">code valid until '+esc(dt(c.exp))+'</span></div><button data-cc="'+esc(c.id)+'">Cancel code</button></div>'});
+  (r.devices||[]).slice().sort(function(a,b){return (b.last||0)-(a.last||0)}).forEach(function(d){
+    o+='<div class="row"><div><b>'+esc(d.label)+'</b> <span class="tag '+(d.revoked?"bad":"on")+'">'+(d.revoked?"access removed":"active")+'</span><br><span class="mute">Device: '+esc(d.dname||"")+(d.device&&d.device!==d.dname?" · "+esc(d.device):"")+'<br>IP address: '+esc(d.lastIp||d.ip||"unknown")+(d.ip&&d.lastIp&&d.ip!==d.lastIp?" (first login from "+esc(d.ip)+")":"")+'<br>First login: '+esc(dt(d.created))+' · Last seen: '+esc(dt(d.last))+'</span></div><div class="bar" style="margin:0">'+(d.revoked?'<button data-dd="'+esc(d.id)+'">Delete record</button>':'<button data-dr="'+esc(d.id)+'">Remove access</button>')+'</div></div>'});
+  $("devList").innerHTML=o||'<div class="empty">No access codes or devices yet.</div>';
+}
+$("acList").onclick=function(){loadDevices()};
+$("acMake").onclick=function(){
+  if(!adminOnly())return;var label=$("acn").value.trim();
+  if(!label){$("acn").focus();dlg("Type the person's name first.",{info:1});return}
+  if(!syncUrl()){dlg("Access codes need the online service. Open the app from your Vercel link.",{info:1});return}
+  ensureOwner(async function(){
+    try{
+      var r=await post({action:"access_create",owner:OWN,label:label,hours:+$("acx").value});
+      $("acn").value="";
+      dlg("Access code for "+label+":\n\n"+r.code+"\n\nGive it to them. It works once and expires "+dt(r.exp)+".\nThey open the app link, tap “Log in with an access code”, and type it.",{info:1});
+      loadDevices();
+    }catch(e){if(e&&(e.code==="owner_required"||e.code==="bad_owner"))OWN="";dlg(syncError(e),{info:1})}
+  });
+};
+$("devList").onclick=function(e){
+  if(!adminOnly())return;
+  var b=e.target.closest("[data-cc],[data-dr],[data-dd]");if(!b)return;
+  var act=b.dataset.cc?"access_cancel":b.dataset.dr?"device_revoke":"device_delete",id=b.dataset.cc||b.dataset.dr||b.dataset.dd;
+  var go=async function(){
+    try{await post({action:act,owner:OWN,id:id});loadDevices()}
+    catch(er){if(er&&(er.code==="owner_required"||er.code==="bad_owner"))OWN="";dlg(syncError(er),{info:1})}
+  };
+  if(act==="device_revoke")dlg("Remove this device's access? It will be signed out within about 2 minutes and will need a new access code.",{ok:"Remove access"},function(){ensureOwner(go)});
+  else ensureOwner(go);
+};
+
 /* ---------- import, multi-tab ---------- */
 function parseList(t){
   var out=[],nm=null;
@@ -1088,7 +1180,7 @@ addEventListener("storage",function(e){
 function show(t){
   document.querySelectorAll(".tab").forEach(function(x){x.setAttribute("aria-selected",x.dataset.t===t)});
   ["scan","ppl","rep","usr","sbj"].forEach(function(id){$(id).hidden=id!==t});if(t==="sbj")renderSubjects();
-  if(t!=="scan")camStop();if(t==="rep"){var as=activeSid();if(as)$("rsb").value=as;renderRep()}if(t==="ppl")renderPeople();if(t==="usr")renderUsers();
+  if(t!=="scan")camStop();if(t==="rep"){var as=activeSid();if(as)$("rsb").value=as;renderRep()}if(t==="ppl")renderPeople();if(t==="usr")renderUsers();if(t==="usr"&&OWN&&adminOnly())loadDevices();
 }
 document.querySelectorAll(".tab").forEach(function(t){t.onclick=function(){if(t.dataset.a&&!adminOnly())return;show(t.dataset.t)}});
 $("autoMark").checked=D.auto!==false;
@@ -1099,7 +1191,7 @@ reindex();updSw();$("mode").value=D.mode;modeUI();$("rd").value=$("rd2").value=y
 if(memOnly)warn("This browser blocks saving (private mode?). Data will be lost when you close the tab. Use a normal window and download PDF reports.");
 if(useFace())fchip("Face: loads when camera starts","");
 var sess=null;try{sess=sessionStorage.getItem("nup-sess")}catch(e){}
-if(sess&&D.users.some(function(u){return u.u===sess}))enter(sess);else showAuth();
+if(SM.token&&syncUrl())enterDevice();else if(sess&&D.users.some(function(u){return u.u===sess}))enter(sess);else showAuth();
 })();
 </script>
 </body>
